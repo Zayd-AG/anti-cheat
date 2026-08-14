@@ -13,6 +13,8 @@ import pandas as pd
 from sklearn.ensemble import IsolationForest
 from sklearn.metrics import confusion_matrix, precision_recall_fscore_support
 from sklearn.model_selection import train_test_split
+from sklearn.pipeline import make_pipeline
+from sklearn.preprocessing import StandardScaler
 
 from baseline_detector import anomaly_scores, fit_zscore_baseline
 from telemetry import FEATURE_COLUMNS
@@ -29,7 +31,12 @@ def train_and_score(data: pd.DataFrame, contamination: float, seed: int) -> tupl
     feature splits, without needing a large trusted corpus of confirmed cheats.
     `contamination` tells it the expected outlier prevalence for its threshold.
     """
-    model = IsolationForest(contamination=contamination, random_state=seed, n_estimators=300, n_jobs=-1)
+    # Scaling prevents high-range measurements (milliseconds) from dominating
+    # random split selection over bounded features such as aim_snap_ratio.
+    model = make_pipeline(
+        StandardScaler(),
+        IsolationForest(contamination=contamination, random_state=seed, n_estimators=500, n_jobs=-1),
+    )
     model.fit(data[FEATURE_COLUMNS])
     # sklearn returns larger scores for more normal samples, so negate for an
     # intuitive "larger means more suspicious" value stored by the API later.
@@ -87,13 +94,18 @@ def metric_report(labels: pd.Series, predictions: pd.Series) -> dict[str, float]
     }
 
 
-def print_profile_false_positive_rates(data: pd.DataFrame, predictions: pd.Series) -> None:
-    """Show whether rare-but-legitimate skill is disproportionately flagged."""
+def print_profile_error_rates(data: pd.DataFrame, predictions: pd.Series) -> None:
+    """Show safety impact across legitimate profiles and recall by cheat style."""
     if "player_profile" not in data:
         return
     print("False-positive rate by legitimate player profile:")
-    for profile in ("typical_legitimate", "elite_legitimate"):
-        profile_mask = data["player_profile"] == profile
+    for profile in sorted(data.loc[data["label"] == 0, "player_profile"].unique()):
+        profile_mask = (data["player_profile"] == profile) & (data["label"] == 0)
+        if profile_mask.any():
+            print(f"{profile}: {(predictions[profile_mask] == 1).mean():.3%}")
+    print("Recall by cheat style:")
+    for profile in sorted(data.loc[data["label"] == 1, "player_profile"].unique()):
+        profile_mask = (data["player_profile"] == profile) & (data["label"] == 1)
         if profile_mask.any():
             print(f"{profile}: {(predictions[profile_mask] == 1).mean():.3%}")
 
@@ -145,7 +157,10 @@ if __name__ == "__main__":
     print(f"Threshold policy: select the highest score allowed by a {args.target_fpr:.1%} validation false-positive-rate budget.")
 
     # Fit only the training features. The known labels remain evaluation metadata.
-    model = IsolationForest(contamination=args.contamination, random_state=args.seed, n_estimators=300, n_jobs=-1)
+    model = make_pipeline(
+        StandardScaler(),
+        IsolationForest(contamination=args.contamination, random_state=args.seed, n_estimators=500, n_jobs=-1),
+    )
     model.fit(train[FEATURE_COLUMNS])
     validation_scores = pd.Series(-model.score_samples(validation[FEATURE_COLUMNS]), index=validation.index)
     test_scores = pd.Series(-model.score_samples(test[FEATURE_COLUMNS]), index=test.index, name="anomaly_score")
@@ -159,7 +174,7 @@ if __name__ == "__main__":
     print("\nFinal held-out test-set results:")
     print(f"Isolation Forest threshold: {ml_threshold:.6f}")
     ml_result = print_evaluation("Isolation Forest", test["label"], ml_predictions)
-    print_profile_false_positive_rates(test, ml_predictions)
+    print_profile_error_rates(test, ml_predictions)
 
     # The z-score baseline receives the same train/validation/test treatment.
     baseline_means, baseline_stds = fit_zscore_baseline(train)
@@ -169,7 +184,7 @@ if __name__ == "__main__":
     baseline_predictions = predict_from_threshold(test_baseline_scores, baseline_threshold)
     print(f"Z-score baseline threshold: {baseline_threshold:.6f}")
     baseline_result = print_evaluation("Z-score baseline", test["label"], baseline_predictions)
-    print_profile_false_positive_rates(test, baseline_predictions)
+    print_profile_error_rates(test, baseline_predictions)
 
     report = {
         "split_sizes": {"train": len(train), "validation": len(validation), "test": len(test)},

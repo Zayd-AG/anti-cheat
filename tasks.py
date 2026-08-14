@@ -9,8 +9,10 @@ import joblib
 import numpy as np
 import redis
 from celery import Celery
+from sqlalchemy.exc import SQLAlchemyError
 
 from config import MODEL_PATH, REDIS_URL, TRUST_SCORE_TTL_SECONDS
+from db import record_player_risk
 from telemetry import FEATURE_COLUMNS, extract_features
 
 # Redis serves two separate roles: Celery's broker transports durable-ish task
@@ -30,8 +32,8 @@ def get_redis_client() -> redis.Redis:
     return redis.Redis.from_url(REDIS_URL, decode_responses=True)
 
 
-@celery_app.task(name="score_session", autoretry_for=(redis.RedisError,), retry_backoff=True, max_retries=3)
-def score_session(session_id: str, telemetry: dict) -> dict:
+@celery_app.task(name="score_session", autoretry_for=(redis.RedisError, SQLAlchemyError), retry_backoff=True, max_retries=3)
+def score_session(session_id: str, player_id: str, telemetry: dict) -> dict:
     """Score asynchronously so slow model/cache work never consumes API workers.
 
     Keeping scoring off the FastAPI request path lets the API acknowledge bursts
@@ -42,13 +44,19 @@ def score_session(session_id: str, telemetry: dict) -> dict:
     vector = np.array([[features[column] for column in FEATURE_COLUMNS]])
     model = get_model()
     anomaly_score = float(-model.score_samples(vector)[0])
-    # `decision_function` is centered on the Isolation Forest's learned
-    # contamination threshold: positive means inlier, negative means outlier.
-    # Its sign is therefore a safer trust-score midpoint than a hard-coded raw
-    # score (whose scale varies by fitted model). This remains a display score,
-    # not a calibrated probability that a player cheated.
+    # A score near 100 means the session looks highly suspicious. It is a useful
+    # review-prioritization signal, not a calibrated probability of cheating.
     decision_margin = float(model.decision_function(vector)[0])
-    trust_score = float(100 / (1 + np.exp(-20 * decision_margin)))
-    payload = {"session_id": session_id, "trust_score": round(trust_score, 3), "anomaly_score": round(anomaly_score, 6), "features": features}
-    get_redis_client().setex(f"trust_score:{session_id}", TRUST_SCORE_TTL_SECONDS, json.dumps(payload))
+    cheat_risk_score = float(100 / (1 + np.exp(20 * decision_margin)))
+    rolling_score, sessions_considered = record_player_risk(session_id, player_id, cheat_risk_score, anomaly_score)
+    payload = {
+        "session_id": session_id,
+        "player_id": player_id,
+        "cheat_risk_score": round(cheat_risk_score, 3),
+        "player_cheat_risk_score": round(rolling_score, 3),
+        "player_sessions_considered": sessions_considered,
+        "anomaly_score": round(anomaly_score, 6),
+        "features": features,
+    }
+    get_redis_client().setex(f"cheat_risk:{session_id}", TRUST_SCORE_TTL_SECONDS, json.dumps(payload))
     return payload

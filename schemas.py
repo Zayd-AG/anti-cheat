@@ -7,6 +7,7 @@ from pydantic import BaseModel, Field, field_validator
 
 class TelemetryBatch(BaseModel):
     session_id: Annotated[str, Field(min_length=1, max_length=128, pattern=r"^[A-Za-z0-9:_-]+$")]
+    player_id: Annotated[str, Field(min_length=1, max_length=128, pattern=r"^[A-Za-z0-9:_-]+$")]
     reaction_times_ms: list[Annotated[float, Field(gt=0, le=5_000)]]
     movement_speeds: list[Annotated[float, Field(ge=0, le=100)]]
     click_timestamps_ms: list[Annotated[float, Field(ge=0)]]
@@ -29,5 +30,6 @@ class TelemetryBatch(BaseModel):
 
 class QueuedResponse(BaseModel):
     session_id: str
+    player_id: str
     task_id: str
     status: str = "queued"

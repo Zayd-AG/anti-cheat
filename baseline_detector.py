@@ -40,8 +40,8 @@ def evaluate(labels: pd.Series, predictions: np.ndarray, scores: pd.Series, data
     print(confusion_matrix(labels, predictions, labels=[0, 1]))
     if "player_profile" in data:
         print("\nFalse-positive rate by legitimate player profile:")
-        for profile in ("typical_legitimate", "elite_legitimate"):
-            profile_mask = (data["player_profile"] == profile).to_numpy()
+        for profile in sorted(data.loc[data["label"] == 0, "player_profile"].unique()):
+            profile_mask = ((data["player_profile"] == profile) & (data["label"] == 0)).to_numpy()
             if profile_mask.any():
                 print(f"{profile}: {(predictions[profile_mask] == 1).mean():.3%}")
     for title, mask in (

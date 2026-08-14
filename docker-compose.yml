@@ -1,4 +1,18 @@
 services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: anti_cheat
+      POSTGRES_USER: anti_cheat
+      POSTGRES_PASSWORD: anti_cheat
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U anti_cheat -d anti_cheat"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
   redis:
     image: redis:7-alpine
     ports:
@@ -18,8 +32,11 @@ services:
       - .:/app
     environment:
       REDIS_URL: redis://redis:6379/0
+      DATABASE_URL: postgresql+psycopg://anti_cheat:anti_cheat@postgres:5432/anti_cheat
     depends_on:
       redis:
+        condition: service_healthy
+      postgres:
         condition: service_healthy
 
   worker:
@@ -29,6 +46,9 @@ services:
       - .:/app
     environment:
       REDIS_URL: redis://redis:6379/0
+      DATABASE_URL: postgresql+psycopg://anti_cheat:anti_cheat@postgres:5432/anti_cheat
     depends_on:
       redis:
+        condition: service_healthy
+      postgres:
         condition: service_healthy

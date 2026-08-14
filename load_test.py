@@ -51,12 +51,12 @@ def main() -> None:
     with httpx.Client(timeout=args.timeout) as client:
         for index, (_, row) in enumerate(sessions.iterrows()):
             session_id = f"load-{int(time.time() * 1000)}-{index}"
-            payload = {"session_id": session_id, **telemetry_from_features(row.to_dict(), index)}
+            payload = {"session_id": session_id, "player_id": f"load-player-{index % 25}", **telemetry_from_features(row.to_dict(), index)}
             started = time.perf_counter()
             response = client.post(f"{args.url}/events", json=payload)
             response.raise_for_status()
             while True:
-                score = client.get(f"{args.url}/trust_score/{session_id}")
+                score = client.get(f"{args.url}/cheat_risk/{session_id}")
                 if score.status_code == 200:
                     latencies.append(time.perf_counter() - started)
                     break

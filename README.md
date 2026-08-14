@@ -1,17 +1,19 @@
-# Anti-Cheat
+# Game Anti-Cheat Detection System
 
-A backend portfolio project that ingests simulated game data, detects suspicious sessions, and exposes a cached trust score. It progresses from a transparent statistical baseline to an async, ML-backed service.
+A backend project that scores simulated player sessions and keeps a Cheat Risk Score for each player. It compares a simple z-score baseline with an Isolation Forest model, then serves scores through an asynchronous API. All data and results are synthetic.
 
-## Architecture
+## How it works
 
 ```text
-Game client -> FastAPI POST /events -> Redis/Celery queue -> Celery scorer
-                                                        -> Isolation Forest
-                                                        -> Redis trust_score:{session_id}
-Game client <- FastAPI GET /trust_score/{session_id} <- Redis cache
+Game client -> FastAPI POST /events -> Redis/Celery queue -> Celery scorer -> scaled Isolation Forest
+                                                                    |              |
+                                                                    |              -> Redis cheat_risk:{session_id}
+                                                                    -> PostgreSQL session history + rolling player risk
+Game client <- FastAPI GET /cheat_risk/{session_id} <- Redis cache
+Game client <- FastAPI GET /players/{player_id}/cheat_risk <- PostgreSQL summary
 ```
 
-FastAPI validates and accepts data quickly. It does **not** run model inference during the request: scoring happens in Celery asynchronously so bursts do not exhaust web workers, worker capacity can scale independently, and Redis failures can retry safely. Redis is the Celery broker and the short-lived lookup cache; those are separate uses of the same service.
+FastAPI accepts player events without waiting for the model. Celery scores each session in the background, which keeps the API responsive. Redis queues jobs and caches recent session results, while PostgreSQL stores session history and a rolling score from each player's latest 20 sessions.
 
 ## Setup
 
@@ -25,7 +27,7 @@ docker compose run --rm api python ml_detector.py
 docker compose up --build
 ```
 
-The model must be generated before starting the worker because it loads `models/isolation_forest.joblib` on its first scoring task. With the stack running in a second terminal:
+Train the model before starting the worker. With the stack running in a second terminal:
 
 ```bash
 docker compose run --rm api python load_test.py --url http://api:8000 --sessions 100 --rate 10
@@ -34,35 +36,30 @@ docker compose run --rm api python imbalance_experiment.py
 
 For a non-Docker installation, create a Python 3.11 virtual environment and run `pip install -r requirements.txt` first.
 
-## Phases
+## What each part does
 
-<<<<<<< HEAD
-1. `generate_data.py` creates 5,000 session-level records in `sessions.csv`: typical legitimate players, elite legitimate players (10% of legitimate sessions), and deliberately inhuman bot/cheat sessions (5% overall). Elite players are fast and accurate but retain human reaction-time variation, irregular click timing, and plausible movement caps. Both legitimate profiles use label 0; labels are never used to train the ML detector.
-2. `baseline_detector.py` uses RMS combined z-scores. This transparent baseline reports precision, recall, F1, false-positive rate, a confusion matrix, and mistakes to show what thresholding misses.
-3. `ml_detector.py` uses a reproducible 60/20/20 train/validation/test split. It fits an Isolation Forest only on training features, chooses thresholds on validation data using a declared false-positive-rate budget, and reports final metrics only on the untouched test set. It also reports false-positive rates for typical and elite legitimate players, then saves the model and creates the first two graphs below.
-=======
-1. `generate_data.py` creates 5,000 session-level records in `sessions.csv`: average players, very skilled players (10% of legitimate sessions), and deliberately inhuman bot/cheat sessions (5% overall). The skilled players are fast and accurate but retain human reaction-time variation, irregular click timing, and plausible movement caps. Both legitimate profiles use label 0; labels are never used to train the ML detector.
-2. `baseline_detector.py` uses RMS combined z-scores. This baseline reports precision, recall, F1, false-positive rate, a confusion matrix, and mistakes to show what thresholding misses.
-3. `ml_detector.py` fits an Isolation Forest only on the seven telemetry features. Isolation Forest is appropriate where confirmed-cheat labels are limited: it isolates rare behavioral patterns without supervised training. It reports false-positive rates for typical and elite legitimate players, then saves the model and creates the first two graphs below.
->>>>>>> 2e9540c43ebafcf4bc9381b1fa77364a8d1c9874
-4. `app.py` accepts raw streams; `tasks.py` extracts the same seven features via `telemetry.py`, scores them asynchronously, and caches the score. Centralizing feature extraction avoids training-serving skew.
-5. `load_test.py` makes Phase 1-like raw events and reports end-to-end POST-to-Redis latency. `imbalance_experiment.py` regenerates data at 1%, 5%, 10%, and 20% cheat rates, then measures unsupervised performance.
-6. This README records the architecture, how to reproduce each phase, evaluation output, and the generated evidence below.
+1. `generate_data.py` creates 5,000 sessions across typical, elite, controller, and lag-affected legitimate players, plus four cheat styles.
+2. `baseline_detector.py` uses z-scores as an explainable starting point and shows where simple rules make mistakes.
+3. `ml_detector.py` trains Isolation Forest on a 60/20/20 train/validation/test split. The validation split selects a false-positive-rate threshold, and the untouched test split produces the final metrics.
+4. `app.py` and `tasks.py` accept player events, score them in the background, cache each session in Redis, and save player history in PostgreSQL.
+5. `load_test.py` measures end-to-end scoring latency. `imbalance_experiment.py` shows how model performance changes at different cheat rates.
 
 ## API example
 
 ```bash
 curl -X POST http://localhost:8000/events -H "Content-Type: application/json" -d '{
   "session_id":"match-123-player-7",
+  "player_id":"player-7",
   "reaction_times_ms":[225,245,271],
   "movement_speeds":[4.8,5.2,6.0],
   "click_timestamps_ms":[0,205,430,660],
   "aim_movements":[false,false,true,false]
 }'
-curl http://localhost:8000/trust_score/match-123-player-7
+curl http://localhost:8000/cheat_risk/match-123-player-7
+curl http://localhost:8000/players/player-7/cheat_risk
 ```
 
-`POST /events` returns HTTP 202 and a task ID. `GET /trust_score/{session_id}` returns 404 while the task is waiting or unknown, then returns a bounded `trust_score` (a display value, not a cheating probability), raw anomaly score, and extracted features.
+`POST /events` adds a session to the scoring queue and returns a task ID. `GET /cheat_risk/{session_id}` returns that session's score once it is ready. `GET /players/{player_id}/cheat_risk` returns a player's rolling score from their latest 20 sessions.
 
 ## Generated evaluation graphs
 
@@ -89,4 +86,4 @@ Run the commands above to create these repository-local PNGs:
 
 ## Limitations
 
-The data is simulated, meaning that it does not perfectly follow real behavior. Real cheaters are more varied and less obvious, while legitimate players differ by device, accessibility needs, connection quality, skill level, and game mode. A production service would need privacy controls, calibrated thresholds, review workflows, drift monitoring, and carefully evaluated appeals, not automatic decisions from this score alone.
+The data and results are synthetic, so they do not represent real player behavior perfectly. A real system would need testing on production-like data, human review, and an appeal process; these scores should not trigger automatic punishment.
