@@ -12,6 +12,10 @@ from celery import Celery
 from sqlalchemy.exc import SQLAlchemyError
 
 from config import MODEL_PATH, REDIS_URL, TRUST_SCORE_TTL_SECONDS
+# Import the model class before unpickling the calibrated directional model.
+# This also makes a missing image/source file fail immediately at worker startup
+# instead of after the first scoring request.
+from directional_detector import DirectionalSignalDetector
 from db import record_player_risk
 from telemetry import FEATURE_COLUMNS, extract_features
 
