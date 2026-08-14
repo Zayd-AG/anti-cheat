@@ -17,6 +17,7 @@ from sklearn.pipeline import make_pipeline
 from sklearn.preprocessing import StandardScaler
 
 from baseline_detector import anomaly_scores, fit_zscore_baseline
+from directional_detector import DirectionalSignalDetector
 from telemetry import FEATURE_COLUMNS
 
 
@@ -138,7 +139,7 @@ def plot_comparison(results: dict[str, tuple[float, float, float]], output: Path
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--data", type=Path, default=Path("sessions.csv"))
-    parser.add_argument("--model-output", type=Path, default=Path("models/isolation_forest.joblib"))
+    parser.add_argument("--model-output", type=Path, default=Path("models/directional_signal_detector.joblib"))
     parser.add_argument("--graphs-dir", type=Path, default=Path("graphs"))
     parser.add_argument("--contamination", type=float, default=0.05)
     parser.add_argument("--seed", type=int, default=42)
@@ -167,10 +168,6 @@ if __name__ == "__main__":
     ml_threshold = threshold_for_target_fpr(validation_scores, validation["label"], args.target_fpr)
     ml_predictions = predict_from_threshold(test_scores, ml_threshold)
 
-    args.model_output.parent.mkdir(parents=True, exist_ok=True)
-    joblib.dump(model, args.model_output)
-    print(f"Saved trained model to {args.model_output}")
-
     print("\nFinal held-out test-set results:")
     print(f"Isolation Forest threshold: {ml_threshold:.6f}")
     ml_result = print_evaluation("Isolation Forest", test["label"], ml_predictions)
@@ -186,15 +183,33 @@ if __name__ == "__main__":
     baseline_result = print_evaluation("Z-score baseline", test["label"], baseline_predictions)
     print_profile_error_rates(test, baseline_predictions)
 
+    # A directional model complements general anomaly detection. It focuses on
+    # signals that should only be suspicious on one side (for example, highly
+    # regular clicks), so normal slow or controller input is not penalized.
+    directional_model = DirectionalSignalDetector().fit(train)
+    validation_directional_scores = pd.Series(-directional_model.score_samples(validation), index=validation.index)
+    directional_threshold = threshold_for_target_fpr(validation_directional_scores, validation["label"], args.target_fpr)
+    directional_model.set_threshold(directional_threshold)
+    test_directional_scores = pd.Series(-directional_model.score_samples(test), index=test.index)
+    directional_predictions = predict_from_threshold(test_directional_scores, directional_threshold)
+    print(f"Directional signal threshold: {directional_threshold:.6f}")
+    directional_result = print_evaluation("Directional signal detector", test["label"], directional_predictions)
+    print_profile_error_rates(test, directional_predictions)
+
+    args.model_output.parent.mkdir(parents=True, exist_ok=True)
+    joblib.dump(directional_model, args.model_output)
+    print(f"Saved calibrated directional model to {args.model_output}")
+
     report = {
         "split_sizes": {"train": len(train), "validation": len(validation), "test": len(test)},
         "target_validation_false_positive_rate": args.target_fpr,
         "isolation_forest": {"threshold": ml_threshold, **metric_report(test["label"], ml_predictions)},
         "z_score_baseline": {"threshold": baseline_threshold, **metric_report(test["label"], baseline_predictions)},
+        "directional_signal_detector": {"threshold": directional_threshold, **metric_report(test["label"], directional_predictions)},
     }
     args.graphs_dir.mkdir(parents=True, exist_ok=True)
     report_path = args.graphs_dir / "held_out_evaluation.json"
     report_path.write_text(json.dumps(report, indent=2), encoding="utf-8")
     plot_score_distribution(test_scores, test["label"], args.graphs_dir / "anomaly_score_distribution.png")
-    plot_comparison({"Z-score baseline": baseline_result, "Isolation Forest": ml_result}, args.graphs_dir / "baseline_vs_ml.png")
+    plot_comparison({"Z-score baseline": baseline_result, "Isolation Forest": ml_result, "Directional signals": directional_result}, args.graphs_dir / "baseline_vs_ml.png")
     print(f"Saved graphs and held-out report to {args.graphs_dir}")

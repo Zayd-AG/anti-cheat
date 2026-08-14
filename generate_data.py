@@ -127,15 +127,15 @@ def generate_sessions(
     ))
     c = (cheat_profiles == "subtle_aim_assist").sum()
     populate("subtle_aim_assist", (
-        np.clip(rng.normal(185, 26, c), 130, 290), np.clip(rng.normal(32, 11, c), 12, 80),
+        np.clip(rng.normal(185, 26, c), 130, 290), np.clip(rng.normal(30, 10, c), 12, 75),
         np.clip(rng.normal(6.1, 0.75, c), 3.0, 7.5), np.clip(rng.normal(8.4, 0.6, c), 5.0, 9.5),
         np.clip(rng.normal(175, 35, c), 80, 350), np.clip(rng.normal(30, 12, c), 10, 100),
-        rng.beta(9.0, 4.0, c),
+        rng.beta(12.0, 3.0, c),
     ))
     c = (cheat_profiles == "speed_cheat").sum()
     populate("speed_cheat", (
         np.clip(rng.normal(230, 38, c), 130, 390), np.clip(rng.normal(48, 16, c), 12, 110),
-        np.clip(rng.normal(7.6, 0.6, c), 6.2, 9.0), np.clip(rng.normal(11.2, 0.65, c), 9.8, 13.0),
+        np.clip(rng.normal(7.8, 0.55, c), 6.5, 9.2), np.clip(rng.normal(11.5, 0.55, c), 10.0, 13.0),
         np.clip(rng.normal(205, 42, c), 85, 450), np.clip(rng.normal(50, 18, c), 12, 135),
         rng.beta(2.0, 10.0, c),
     ))
@@ -143,7 +143,7 @@ def generate_sessions(
     populate("click_bot", (
         np.clip(rng.normal(235, 38, c), 130, 390), np.clip(rng.normal(48, 16, c), 12, 110),
         np.clip(rng.normal(5.3, 0.85, c), 2.2, 7.5), np.clip(rng.normal(7.4, 0.75, c), 4.5, 9.5),
-        np.clip(rng.normal(115, 12, c), 75, 150), np.clip(rng.normal(5, 2, c), 0.5, 10),
+        np.clip(rng.normal(108, 10, c), 75, 145), np.clip(rng.normal(4, 1.5, c), 0.5, 8),
         rng.beta(2.0, 10.0, c),
     ))
     frame = pd.DataFrame(data, columns=FEATURE_COLUMNS)
