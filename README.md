@@ -43,6 +43,7 @@ For a non-Docker installation, create a Python 3.11 virtual environment and run 
 3. `ml_detector.py` trains Isolation Forest on a 60/20/20 train/validation/test split. The validation split selects a false-positive-rate threshold, and the untouched test split produces the final metrics.
 4. `app.py` and `tasks.py` accept player events, score them in the background, cache each session in Redis, and save player history in PostgreSQL.
 5. `load_test.py` measures end-to-end scoring latency. `imbalance_experiment.py` shows how model performance changes at different cheat rates.
+6. `dashboard/` contains a lightweight React reviewer dashboard. It shows recent high-risk sessions, a session's Cheat Risk Score, the behavior that caused a flag, and the selected player's rolling history.
 
 ## API example
 

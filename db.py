@@ -5,7 +5,7 @@ from __future__ import annotations
 from functools import lru_cache
 
 import numpy as np
-from sqlalchemy import DateTime, Float, Integer, String, create_engine, func, select, text
+from sqlalchemy import JSON, DateTime, Float, Integer, String, create_engine, func, select, text
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, sessionmaker
 
 from config import DATABASE_URL, PLAYER_HISTORY_WINDOW
@@ -24,6 +24,7 @@ class PlayerSessionRisk(Base):
     player_id: Mapped[str] = mapped_column(String(128), index=True)
     cheat_risk_score: Mapped[float] = mapped_column(Float)
     anomaly_score: Mapped[float] = mapped_column(Float)
+    features: Mapped[dict[str, float]] = mapped_column(JSON)
     created_at: Mapped[object] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
@@ -50,8 +51,17 @@ def get_session_factory():
 
 @lru_cache(maxsize=1)
 def initialize_database() -> None:
-    """Create demo tables on startup; production systems should use migrations."""
-    Base.metadata.create_all(get_engine())
+    """Create demo tables once, safely across the API and worker processes.
+
+    FastAPI and Celery boot independently. A PostgreSQL advisory lock prevents
+    both processes from issuing CREATE TABLE at the same time during startup.
+    Production systems should use versioned migrations instead.
+    """
+    with get_engine().begin() as connection:
+        connection.execute(text("SELECT pg_advisory_lock(8472031)"))
+        Base.metadata.create_all(connection)
+        connection.execute(text("ALTER TABLE player_session_risks ADD COLUMN IF NOT EXISTS features JSON DEFAULT '{}'::json"))
+        connection.execute(text("SELECT pg_advisory_unlock(8472031)"))
 
 
 def check_database_connection() -> None:
@@ -59,7 +69,13 @@ def check_database_connection() -> None:
         connection.execute(text("SELECT 1"))
 
 
-def record_player_risk(session_id: str, player_id: str, cheat_risk_score: float, anomaly_score: float) -> tuple[float, int]:
+def record_player_risk(
+    session_id: str,
+    player_id: str,
+    cheat_risk_score: float,
+    anomaly_score: float,
+    features: dict[str, float],
+) -> tuple[float, int]:
     """Store a session and calculate an exponentially weighted recent-player risk.
 
     Newer sessions receive the greatest weight, but a single unusual session does
@@ -76,6 +92,7 @@ def record_player_risk(session_id: str, player_id: str, cheat_risk_score: float,
                 player_id=player_id,
                 cheat_risk_score=cheat_risk_score,
                 anomaly_score=anomaly_score,
+                features=features,
             ))
             database.flush()
         elif existing.player_id != player_id:
@@ -110,3 +127,15 @@ def get_player_risk_summary(player_id: str) -> PlayerRiskSummary | None:
     initialize_database()
     with get_session_factory()() as database:
         return database.get(PlayerRiskSummary, player_id)
+
+
+def get_recent_flagged_sessions(limit: int, minimum_score: float) -> list[PlayerSessionRisk]:
+    """Return the highest-risk recent sessions for the reviewer queue."""
+    initialize_database()
+    with get_session_factory()() as database:
+        return list(database.scalars(
+            select(PlayerSessionRisk)
+            .where(PlayerSessionRisk.cheat_risk_score >= minimum_score)
+            .order_by(PlayerSessionRisk.cheat_risk_score.desc(), PlayerSessionRisk.created_at.desc())
+            .limit(limit)
+        ))

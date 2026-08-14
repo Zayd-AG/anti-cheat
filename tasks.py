@@ -48,7 +48,9 @@ def score_session(session_id: str, player_id: str, telemetry: dict) -> dict:
     # review-prioritization signal, not a calibrated probability of cheating.
     decision_margin = float(model.decision_function(vector)[0])
     cheat_risk_score = float(100 / (1 + np.exp(20 * decision_margin)))
-    rolling_score, sessions_considered = record_player_risk(session_id, player_id, cheat_risk_score, anomaly_score)
+    rolling_score, sessions_considered = record_player_risk(
+        session_id, player_id, cheat_risk_score, anomaly_score, features
+    )
     payload = {
         "session_id": session_id,
         "player_id": player_id,
