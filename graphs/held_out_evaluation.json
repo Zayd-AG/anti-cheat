@@ -1,0 +1,22 @@
+{
+  "split_sizes": {
+    "train": 3000,
+    "validation": 1000,
+    "test": 1000
+  },
+  "target_validation_false_positive_rate": 0.01,
+  "isolation_forest": {
+    "threshold": 0.544508732309643,
+    "precision": 0.875,
+    "recall": 1.0,
+    "f1": 0.933333,
+    "false_positive_rate": 0.007361
+  },
+  "z_score_baseline": {
+    "threshold": 1.268533028093619,
+    "precision": 0.830508,
+    "recall": 1.0,
+    "f1": 0.907407,
+    "false_positive_rate": 0.010515
+  }
+}
