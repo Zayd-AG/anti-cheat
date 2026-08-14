@@ -15,6 +15,7 @@ def generate_sessions(
     n_sessions: int = 5_000,
     cheat_rate: float = 0.05,
     elite_rate: float = 0.10,
+    lag_rate: float = 0.08,
     seed: int = 42,
 ) -> pd.DataFrame:
     """Return labeled sessions with typical, elite, and cheating behavior.
@@ -22,8 +23,10 @@ def generate_sessions(
     Labels exist only to evaluate detectors. The later Isolation Forest never sees
     them during fitting, mirroring a setting where confirmed cheats are scarce.
     """
-    if n_sessions <= 0 or not 0 <= cheat_rate <= 1 or not 0 <= elite_rate <= 1:
-        raise ValueError("n_sessions must be positive; cheat_rate and elite_rate must be in [0, 1].")
+    if n_sessions <= 0 or not all(0 <= rate <= 1 for rate in (cheat_rate, elite_rate, lag_rate)):
+        raise ValueError("n_sessions must be positive; cheat_rate, elite_rate, and lag_rate must be in [0, 1].")
+    if elite_rate + lag_rate + 0.12 > 1:
+        raise ValueError("elite_rate + lag_rate + controller rate (0.12) cannot exceed 1.")
     rng = np.random.default_rng(seed)
     labels = (rng.random(n_sessions) < cheat_rate).astype(int)
     normal = labels == 0
@@ -38,7 +41,7 @@ def generate_sessions(
     controller = np.zeros(n_sessions, dtype=bool)
     lag_affected = np.zeros(n_sessions, dtype=bool)
     controller_count = round(len(normal_indices) * 0.12)
-    lag_count = round(len(normal_indices) * 0.08)
+    lag_count = round(len(normal_indices) * lag_rate)
     controller_indices = rng.choice(remaining_legitimate, size=controller_count, replace=False)
     controller[controller_indices] = True
     lag_candidates = np.setdiff1d(remaining_legitimate, controller_indices, assume_unique=True)
@@ -175,9 +178,16 @@ if __name__ == "__main__":
     parser.add_argument("--sessions", type=int, default=5_000)
     parser.add_argument("--cheat-rate", type=float, default=0.05)
     parser.add_argument("--elite-rate", type=float, default=0.10, help="share of legitimate sessions modeled as elite players")
+    parser.add_argument("--lag-rate", type=float, default=0.08, help="share of legitimate sessions modeled as lag-affected players")
     parser.add_argument("--seed", type=int, default=42)
     args = parser.parse_args()
-    sessions = generate_sessions(args.sessions, args.cheat_rate, args.elite_rate, args.seed)
+    sessions = generate_sessions(
+        args.sessions,
+        cheat_rate=args.cheat_rate,
+        elite_rate=args.elite_rate,
+        lag_rate=args.lag_rate,
+        seed=args.seed,
+    )
     sessions.to_csv(args.output, index=False)
     print(f"Saved {args.output}")
     print_summary(sessions)
