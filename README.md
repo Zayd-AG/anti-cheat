@@ -38,7 +38,7 @@ For a non-Docker installation, create a Python 3.11 virtual environment and run 
 
 1. `generate_data.py` creates 5,000 session-level records in `sessions.csv`: typical legitimate players, elite legitimate players (10% of legitimate sessions), and deliberately inhuman bot/cheat sessions (5% overall). Elite players are fast and accurate but retain human reaction-time variation, irregular click timing, and plausible movement caps. Both legitimate profiles use label 0; labels are never used to train the ML detector.
 2. `baseline_detector.py` uses RMS combined z-scores. This transparent baseline reports precision, recall, F1, false-positive rate, a confusion matrix, and mistakes to show what thresholding misses.
-3. `ml_detector.py` fits an Isolation Forest only on the seven telemetry features. Isolation Forest is appropriate where confirmed-cheat labels are limited: it isolates rare behavioral patterns without supervised training. It reports false-positive rates for typical and elite legitimate players, then saves the model and creates the first two graphs below.
+3. `ml_detector.py` uses a reproducible 60/20/20 train/validation/test split. It fits an Isolation Forest only on training features, chooses thresholds on validation data using a declared false-positive-rate budget, and reports final metrics only on the untouched test set. It also reports false-positive rates for typical and elite legitimate players, then saves the model and creates the first two graphs below.
 4. `app.py` accepts raw streams; `tasks.py` extracts the same seven features via `telemetry.py`, scores them asynchronously, and caches the score. Centralizing feature extraction avoids training-serving skew.
 5. `load_test.py` makes Phase 1-like raw events and reports end-to-end POST-to-Redis latency. `imbalance_experiment.py` regenerates data at 1%, 5%, 10%, and 20% cheat rates, then measures unsupervised performance.
 6. This README records the architecture, how to reproduce each phase, evaluation output, and the generated evidence below.
@@ -67,6 +67,7 @@ Run the commands above to create these repository-local PNGs:
 | `graphs/baseline_vs_ml.png` | `ml_detector.py` |
 | `graphs/anomaly_score_distribution.png` | `ml_detector.py` |
 | `graphs/precision_recall_vs_cheat_rate.png` | `imbalance_experiment.py` |
+| `graphs/held_out_evaluation.json` | `ml_detector.py` |
 
 ### Baseline vs ML precision/recall
 

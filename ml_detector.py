@@ -3,15 +3,18 @@
 from __future__ import annotations
 
 import argparse
+import json
 from pathlib import Path
 
 import joblib
 import matplotlib.pyplot as plt
+import numpy as np
 import pandas as pd
 from sklearn.ensemble import IsolationForest
 from sklearn.metrics import confusion_matrix, precision_recall_fscore_support
+from sklearn.model_selection import train_test_split
 
-from baseline_detector import run as run_baseline
+from baseline_detector import anomaly_scores, fit_zscore_baseline
 from telemetry import FEATURE_COLUMNS
 
 
@@ -35,12 +38,53 @@ def train_and_score(data: pd.DataFrame, contamination: float, seed: int) -> tupl
     return model, scores, predictions
 
 
+def split_data(data: pd.DataFrame, test_size: float, validation_size: float, seed: int) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    """Create disjoint, label-stratified splits without using labels for fitting.
+
+    Labels preserve the rare cheat rate in every split, but are never passed to the
+    model. The validation split is reserved for operating-point selection; final
+    metrics are computed once on the untouched test set.
+    """
+    train_validation, test = train_test_split(data, test_size=test_size, stratify=data["label"], random_state=seed)
+    validation_share = validation_size / (1 - test_size)
+    train, validation = train_test_split(
+        train_validation,
+        test_size=validation_share,
+        stratify=train_validation["label"],
+        random_state=seed,
+    )
+    return train, validation, test
+
+
+def threshold_for_target_fpr(scores: pd.Series, labels: pd.Series, target_fpr: float) -> float:
+    """Select a score threshold from validation normals at a declared FPR budget."""
+    normal_scores = scores[labels == 0]
+    if normal_scores.empty:
+        raise ValueError("Validation data must contain legitimate sessions.")
+    return float(np.quantile(normal_scores, 1 - target_fpr))
+
+
+def predict_from_threshold(scores: pd.Series, threshold: float) -> pd.Series:
+    return pd.Series((scores >= threshold).astype(int), index=scores.index)
+
+
 def print_evaluation(name: str, labels: pd.Series, predictions: pd.Series) -> tuple[float, float, float]:
     precision, recall, f1 = metrics(labels, predictions)
     false_positive_rate = float(((predictions == 1) & (labels == 0)).sum() / (labels == 0).sum())
     print(f"{name}: precision={precision:.3f}, recall={recall:.3f}, F1={f1:.3f}, false-positive rate={false_positive_rate:.3%}")
     print(confusion_matrix(labels, predictions, labels=[0, 1]))
     return precision, recall, f1
+
+
+def metric_report(labels: pd.Series, predictions: pd.Series) -> dict[str, float]:
+    """Return JSON-safe final-test metrics for reproducible reporting."""
+    precision, recall, f1 = metrics(labels, predictions)
+    return {
+        "precision": round(float(precision), 6),
+        "recall": round(float(recall), 6),
+        "f1": round(float(f1), 6),
+        "false_positive_rate": round(float(((predictions == 1) & (labels == 0)).sum() / (labels == 0).sum()), 6),
+    }
 
 
 def print_profile_false_positive_rates(data: pd.DataFrame, predictions: pd.Series) -> None:
@@ -86,18 +130,56 @@ if __name__ == "__main__":
     parser.add_argument("--graphs-dir", type=Path, default=Path("graphs"))
     parser.add_argument("--contamination", type=float, default=0.05)
     parser.add_argument("--seed", type=int, default=42)
-    parser.add_argument("--baseline-threshold", type=float, default=1.5)
+    parser.add_argument("--validation-size", type=float, default=0.20)
+    parser.add_argument("--test-size", type=float, default=0.20)
+    parser.add_argument("--target-fpr", type=float, default=0.01, help="maximum validation false-positive rate used to set score thresholds")
     args = parser.parse_args()
+    if not 0 < args.validation_size < 1 or not 0 < args.test_size < 1 or args.validation_size + args.test_size >= 1:
+        raise ValueError("validation-size and test-size must be positive and sum to less than 1.")
+    if not 0 < args.target_fpr < 1:
+        raise ValueError("target-fpr must be between 0 and 1.")
+
     data = pd.read_csv(args.data)
-    labels = data["label"]
-    model, scores, predictions = train_and_score(data, args.contamination, args.seed)
+    train, validation, test = split_data(data, args.test_size, args.validation_size, args.seed)
+    print(f"Split sizes: train={len(train):,}, validation={len(validation):,}, test={len(test):,}")
+    print(f"Threshold policy: select the highest score allowed by a {args.target_fpr:.1%} validation false-positive-rate budget.")
+
+    # Fit only the training features. The known labels remain evaluation metadata.
+    model = IsolationForest(contamination=args.contamination, random_state=args.seed, n_estimators=300, n_jobs=-1)
+    model.fit(train[FEATURE_COLUMNS])
+    validation_scores = pd.Series(-model.score_samples(validation[FEATURE_COLUMNS]), index=validation.index)
+    test_scores = pd.Series(-model.score_samples(test[FEATURE_COLUMNS]), index=test.index, name="anomaly_score")
+    ml_threshold = threshold_for_target_fpr(validation_scores, validation["label"], args.target_fpr)
+    ml_predictions = predict_from_threshold(test_scores, ml_threshold)
+
     args.model_output.parent.mkdir(parents=True, exist_ok=True)
     joblib.dump(model, args.model_output)
     print(f"Saved trained model to {args.model_output}")
-    ml_result = print_evaluation("Isolation Forest", labels, predictions)
-    print_profile_false_positive_rates(data, predictions)
-    baseline_labels, baseline_predictions, _, _ = run_baseline(args.data, args.baseline_threshold)
-    baseline_result = print_evaluation("Z-score baseline", baseline_labels, baseline_predictions)
-    plot_score_distribution(scores, labels, args.graphs_dir / "anomaly_score_distribution.png")
+
+    print("\nFinal held-out test-set results:")
+    print(f"Isolation Forest threshold: {ml_threshold:.6f}")
+    ml_result = print_evaluation("Isolation Forest", test["label"], ml_predictions)
+    print_profile_false_positive_rates(test, ml_predictions)
+
+    # The z-score baseline receives the same train/validation/test treatment.
+    baseline_means, baseline_stds = fit_zscore_baseline(train)
+    validation_baseline_scores = anomaly_scores(validation, baseline_means, baseline_stds)
+    test_baseline_scores = anomaly_scores(test, baseline_means, baseline_stds)
+    baseline_threshold = threshold_for_target_fpr(validation_baseline_scores, validation["label"], args.target_fpr)
+    baseline_predictions = predict_from_threshold(test_baseline_scores, baseline_threshold)
+    print(f"Z-score baseline threshold: {baseline_threshold:.6f}")
+    baseline_result = print_evaluation("Z-score baseline", test["label"], baseline_predictions)
+    print_profile_false_positive_rates(test, baseline_predictions)
+
+    report = {
+        "split_sizes": {"train": len(train), "validation": len(validation), "test": len(test)},
+        "target_validation_false_positive_rate": args.target_fpr,
+        "isolation_forest": {"threshold": ml_threshold, **metric_report(test["label"], ml_predictions)},
+        "z_score_baseline": {"threshold": baseline_threshold, **metric_report(test["label"], baseline_predictions)},
+    }
+    args.graphs_dir.mkdir(parents=True, exist_ok=True)
+    report_path = args.graphs_dir / "held_out_evaluation.json"
+    report_path.write_text(json.dumps(report, indent=2), encoding="utf-8")
+    plot_score_distribution(test_scores, test["label"], args.graphs_dir / "anomaly_score_distribution.png")
     plot_comparison({"Z-score baseline": baseline_result, "Isolation Forest": ml_result}, args.graphs_dir / "baseline_vs_ml.png")
-    print(f"Saved graphs to {args.graphs_dir}")
+    print(f"Saved graphs and held-out report to {args.graphs_dir}")
